@@ -2,7 +2,6 @@ package ro.midra.ticketing.domain;
 
 import jakarta.persistence.*;
 import lombok.*;
-import org.apache.catalina.User;
 
 import java.math.BigDecimal;
 import java.time.LocalDateTime;
