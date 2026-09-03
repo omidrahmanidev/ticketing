@@ -42,35 +42,13 @@ The system must guarantee:
 
 ## 2. Architecture
 
-![ticketing.png](..%2F..%2FPictures%2Fticketing.png)
-
+![Ticketing System Architecture](src/main/resources/ticketing.png)
 
 The main idea is simple: **Redis makes the system fast, MySQL keeps the data correct, and Kafka handles work outside the main request.** The system never trusts Redis alone for correctness —
 MySQL is always the final judge of what is true.
 
 ### 2.1 Normal path (Redis is healthy)
 
-```mermaid
-sequenceDiagram
-    participant Client
-    participant API as Spring Boot Pod
-    participant Redis
-    participant MySQL
-    participant Outbox as Outbox Table
-    participant Kafka
-
-    Client->>API: POST /reservations/hold (requestId, seatIds)
-    API->>MySQL: check requestId (idempotency)
-    API->>Redis: SETNX seat-lock:{seatId} (fast lock, 10 min TTL)
-    Redis-->>API: locked / already taken
-    API->>MySQL: SELECT ... FOR UPDATE + create Reservation
-    API->>Outbox: write SEAT_HELD event (same transaction)
-    API-->>Client: 201 Created
-
-    Note over Outbox,Kafka: A poller job ships outbox rows to Kafka every 500ms
-    Outbox->>Kafka: SEAT_HELD event
-    Kafka->>API: consumed by notification/analytics services
-```
 
 Step by step:
 
