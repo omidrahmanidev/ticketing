@@ -1,7 +1,6 @@
 # Concert Ticket Booking System
 
-A backend system for selling concert tickets under heavy, sudden traffic, without selling the
-same seat twice.
+A backend system for selling concert tickets under heavy, sudden traffic, without selling the same seat twice.
 
 ## Table of Contents
 
@@ -20,7 +19,7 @@ same seat twice.
 We have a concert with **10,000 seats**.
 
 Ticket sales start at exactly **10:00 AM**. In the first **30 seconds**, the system receives
-**500,000 purchase requests**.
+**500,000 buy requests**.
 
 The system has these building blocks:
 - 20 application Pods (stateless, can restart or crash at any time)
@@ -43,8 +42,10 @@ The system must guarantee:
 
 ## 2. Architecture
 
-The core idea is simple: **Redis makes things fast, MySQL makes things correct, Kafka moves
-side work out of the critical path.** The system never trusts Redis alone for correctness —
+![ticketing.png](..%2F..%2FPictures%2Fticketing.png)
+
+
+The main idea is simple: **Redis makes the system fast, MySQL keeps the data correct, and Kafka handles work outside the main request.** The system never trusts Redis alone for correctness —
 MySQL is always the final judge of what is true.
 
 ### 2.1 Normal path (Redis is healthy)
@@ -99,7 +100,7 @@ Step by step:
 
 6. **A separate job publishes to Kafka.** A scheduled job (`OutboxPublisherJob`) runs every
    500ms, reads unpublished outbox rows, and sends them to a Kafka topic. Other services
-   (email, analytics, finance) consume this topic independently, without slowing down the
+   (email, analytics, finance) consume this topic separately, without slowing down the
    purchase itself.
 
 ### 2.2 Releasing unpaid seats (background job)
@@ -112,7 +113,7 @@ because the expiry time lives in MySQL, not in a Redis TTL.
 
 Since this job runs on all 20 Pods, we use **ShedLock** (a small library backed by a MySQL
 table) so that only one Pod actually executes it at a time. Without this, 20 Pods would try to
-release the same expired reservations simultaneously.
+release the same expired reservations at the same time.
 
 ### 2.3 Surviving a Pod crash
 
@@ -129,14 +130,14 @@ held only in one Pod's memory.
 
 ### 2.4 What happens if Redis goes down
 
-This is the trickiest part, so it gets its own section.
+This is the most important failure case, so it has its own section.
 
-**Naive idea (rejected):** if Redis is down, just skip it and hit MySQL directly with
-`SELECT ... FOR UPDATE`. The problem: MySQL was never designed to absorb 500,000 concurrent
+**Simple idea (not used):** if Redis is down, just skip it and hit MySQL directly with
+`SELECT ... FOR UPDATE`. The problem: MySQL was never designed to handle 500,000 at the same time
 write attempts. Without Redis filtering out the losing requests first, this could overwhelm the
 database (too many open connections, lock contention, timeouts).
 
-**What we do instead: queue-based load leveling.**
+**What we do instead: use Kafka as a queue and control the MySQL load.**
 
 ```mermaid
 flowchart LR
@@ -154,14 +155,14 @@ When Redis is unavailable:
 2. The API immediately answers the client with `202 Accepted` instead of `201 Created`, meaning
    "we received your request, check back for the result."
 3. The `OutboxPublisherJob` ships that command to a Kafka topic called `seat-hold-commands`.
-4. A small, fixed-size pool of consumer threads (currently 5, tunable) reads from that topic and
+4. A small, fixed-size pool of consumer threads (currently 5, configurable) reads from that topic and
    performs the actual `SELECT ... FOR UPDATE` work in MySQL — at a rate MySQL can handle, no
    matter how many requests are waiting in Kafka.
 5. The client polls `GET /reservations/status/{requestId}` until the result changes from
    `PROCESSING` to `SUCCEEDED` or `FAILED`.
 
-Kafka is a good fit here because it can absorb very high write rates (hundreds of thousands of
-messages per second) far more easily than a relational database can absorb write transactions.
+Kafka is a good fit here because it can handle very high write rates (hundreds of thousands of
+messages per second) far more easily than a database can handle write transactions.
 Using it as a buffer means MySQL only ever sees traffic at the pace we choose, not the pace the
 crowd arrives at.
 
@@ -171,7 +172,7 @@ back later") change.
 
 ### 2.5 Handling duplicate Kafka messages
 
-Kafka guarantees **at-least-once** delivery, meaning the same message can arrive more than
+Kafka ensures **at-least-once** delivery, meaning the same message can arrive more than
 once. To make this safe, every message carries a unique `eventId`. Before processing a message,
 each consumer checks a `processed_events` table:
 
@@ -292,7 +293,7 @@ Payment { paymentId: 77, reservation: 900, amount: 2, status: SUCCEEDED, provide
 ```
 
 **`OutboxEvent`**
-Not part of the "business" data model — it is plumbing for reliable messaging. Written in the
+Not part of the "business" data model — it is technical support data for reliable messaging. Written in the
 same transaction as a business change (see [4.5](#45-why-the-outbox-pattern)), then picked up
 and sent to Kafka by a background job, then marked `published = true`.
 
@@ -304,7 +305,7 @@ OutboxEvent {
 ```
 
 **`ProcessedEvent`**
-Also plumbing, not business data. Its primary key is the Kafka message's `eventId`. Before a
+Also technical support data, not business data. Its primary key is the Kafka message's `eventId`. Before a
 consumer acts on a message, it checks this table; if the id is already there, it stops.
 
 ---
@@ -314,7 +315,7 @@ consumer acts on a message, it checks this table; if the id is already there, it
 ### 4.1 Why Redis for locking
 
 Redis is extremely fast for simple key operations (over 100,000 ops/sec on a single node is
-normal), and `SETNX` (set a key only if it doesn't already exist) is exactly the primitive a
+normal), and `SETNX` (set a key only if it doesn't already exist) is exactly the basic operation a
 "first come, first served" lock needs, and it's atomic — no race condition between "check" and
 "set." In the first 30 seconds of the sale, most of the 500,000 requests are competing for
 seats someone else already grabbed; Redis rejects those in milliseconds, so MySQL only sees the
@@ -332,7 +333,7 @@ request.
 Networks are unreliable — a client might send the same "buy" request twice because the first
 response was lost, or because a user impatiently clicks twice. By making the client generate one
 `requestId` per click and reusing it on every retry, and by making that id the **primary key**
-of `PurchaseRequest`, the database itself guarantees the second attempt cannot create a second
+of `PurchaseRequest`, the database itself ensures the second attempt cannot create a second
 row. We just look up the existing result and return it.
 
 ### 4.4 Why Kafka
@@ -342,12 +343,12 @@ Kafka does two different jobs in this system:
 1. **Decoupling side effects.** After a seat is held or a payment succeeds, several unrelated
    systems care (email confirmation, analytics dashboard, finance reporting). Without Kafka,
    the purchase request would have to call all of them directly and wait, making it slower and
-   more fragile (one slow/broken service would block ticket sales). With Kafka, the purchase
-   flow just writes one event and moves on; each consumer reads it independently, at its own
+   more easy to break (one slow/broken service would block ticket sales). With Kafka, the purchase
+   flow just writes one event and moves on; each consumer reads it separately, at its own
    pace.
 
 2. **Load leveling when Redis is down.** As explained in [2.4](#24-what-happens-if-redis-goes-down),
-   Kafka can absorb far more writes per second than MySQL can. Using it as a buffer protects the
+   Kafka can handle far more writes per second than MySQL can. Using it as a buffer protects the
    database from being overwhelmed during the exact moment we already lost our fast filtering
    layer.
 

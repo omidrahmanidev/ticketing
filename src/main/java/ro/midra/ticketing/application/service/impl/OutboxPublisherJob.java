@@ -13,13 +13,19 @@ import ro.midra.ticketing.domain.repository.OutboxEventRepository;
 import java.nio.charset.StandardCharsets;
 import java.util.List;
 
+/**
+ * Publishes notification-style events (SEAT_HELD, SEAT_CONFIRMED, RESERVATION_EXPIRED) that
+ * were written to the outbox in the same transaction as a business change.
+ *
+ * Note: HOLD_SEAT_COMMAND (the Redis-down queueing path) does NOT go through here -- it is
+ * published directly to Kafka by KafkaSeatHoldCommandPublisher, on purpose, so that path never
+ * needs a database write at all. See SeatHoldServiceImpl.
+ */
 @Component
 @RequiredArgsConstructor
 public class OutboxPublisherJob {
 
     private static final String SEAT_EVENTS_TOPIC = "seat-events";
-    private static final String SEAT_HOLD_COMMANDS_TOPIC = "seat-hold-commands";
-    private static final String HOLD_SEAT_COMMAND_TYPE = "HOLD_SEAT_COMMAND";
 
     private final OutboxEventRepository outboxEventRepository;
     private final KafkaTemplate<String, String> kafkaTemplate;
@@ -34,15 +40,8 @@ public class OutboxPublisherJob {
         }
 
         for (OutboxEvent event : batch) {
-            // HOLD_SEAT_COMMAND rows are work items for the seat-hold worker pool (used when
-            // Redis was down at request time); everything else is a notification-style event
-            // for downstream consumers (email, analytics, finance, ...).
-            String topic = HOLD_SEAT_COMMAND_TYPE.equals(event.getEventType())
-                    ? SEAT_HOLD_COMMANDS_TOPIC
-                    : SEAT_EVENTS_TOPIC;
-
             ProducerRecord<String, String> record =
-                    new ProducerRecord<>(topic, event.getAggregateId(), event.getPayload());
+                    new ProducerRecord<>(SEAT_EVENTS_TOPIC, event.getAggregateId(), event.getPayload());
             record.headers().add("eventId", event.getEventId().getBytes(StandardCharsets.UTF_8));
             record.headers().add("eventType", event.getEventType().getBytes(StandardCharsets.UTF_8));
 

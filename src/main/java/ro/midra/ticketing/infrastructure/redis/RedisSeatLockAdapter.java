@@ -24,21 +24,34 @@ public class RedisSeatLockAdapter implements SeatLockPort {
         List<Long> acquired = new ArrayList<>();
         try {
             for (Long seatId : seatIds) {
+                String key = KEY_PREFIX + seatId;
+
                 // SETNX seat-lock:{seatId} owner EX ttl -> atomic "set if not exists" with expiry
-                Boolean ok = redisTemplate.opsForValue()
-                        .setIfAbsent(KEY_PREFIX + seatId, owner, ttl);
+                Boolean ok = redisTemplate.opsForValue().setIfAbsent(key, owner, ttl);
 
                 if (Boolean.TRUE.equals(ok)) {
                     acquired.add(seatId);
-                } else {
-                    releaseKeys(acquired);
-                    return new SeatLockResult(true, false, List.of(seatId));
+                    continue;
                 }
+
+                // Not a fresh acquire -- but if the key is already held by THIS SAME requestId,
+                // treat it as acquired too. This makes retries of an in-flight or already-held
+                // request cheap: they resolve entirely in Redis, without a database round trip
+                // to check idempotency for the whole 500k-request storm.
+                String currentOwner = redisTemplate.opsForValue().get(key);
+                if (owner.equals(currentOwner)) {
+                    acquired.add(seatId);
+                    continue;
+                }
+
+                // Genuinely someone else's lock: bail out without touching the database at all.
+                releaseKeys(acquired);
+                return new SeatLockResult(true, false, List.of(seatId));
             }
             return new SeatLockResult(true, true, List.of());
 
         } catch (Exception ex) {
-            log.warn("Redis unavailable, falling back to database-only locking: {}", ex.getMessage());
+            log.warn("Redis unavailable, falling back to the queue-based path: {}", ex.getMessage());
             releaseKeys(acquired);
             return new SeatLockResult(false, false, List.of());
         }
