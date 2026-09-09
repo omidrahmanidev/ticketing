@@ -4,7 +4,7 @@ import ro.midra.ticketing.domain.ProcessedEvent;
 
 public interface ProcessedEventRepository {
 
-    boolean existsById(String eventId);
+    boolean existsByIdEventIdAndIdConsumerGroup(String eventId, String consumerGroup);
 
     ProcessedEvent save(ProcessedEvent processedEvent);
 }

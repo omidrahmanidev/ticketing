@@ -14,9 +14,8 @@ import java.time.LocalDateTime;
 @Builder
 public class ProcessedEvent {
 
-    @Id
-    @Column(name = "event_id", length = 64)
-    private String eventId;
+    @EmbeddedId
+    private ProcessedEventId id;
 
     @Column(name = "processed_at", nullable = false)
     private LocalDateTime processedAt;

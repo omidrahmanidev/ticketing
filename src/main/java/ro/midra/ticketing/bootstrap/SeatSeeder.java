@@ -11,6 +11,8 @@ import org.springframework.transaction.annotation.Transactional;
 import ro.midra.ticketing.domain.Event;
 import ro.midra.ticketing.domain.EventStatus;
 import ro.midra.ticketing.domain.SeatStatus;
+import ro.midra.ticketing.application.readmodel.SeatSnapshot;
+import ro.midra.ticketing.application.service.SeatReadModelPort;
 import ro.midra.ticketing.domain.repository.EventRepository;
 
 import java.sql.Timestamp;
@@ -36,6 +38,7 @@ public class SeatSeeder implements ApplicationRunner {
 
     private final JdbcTemplate jdbcTemplate;
     private final EventRepository eventRepository;
+    private final SeatReadModelPort seatReadModelPort;
 
     @Override
     @Transactional
@@ -48,6 +51,7 @@ public class SeatSeeder implements ApplicationRunner {
                 "SELECT COUNT(*) FROM seats WHERE event_id = ?", Integer.class, event.getEventId());
 
         if (existingCount != null && existingCount > 0) {
+            warmReadModel(event);
             log.info("Event {} already has {} seats, skipping seed", event.getEventId(), existingCount);
             return;
         }
@@ -69,12 +73,13 @@ public class SeatSeeder implements ApplicationRunner {
                     Timestamp.valueOf(now),
                     Timestamp.valueOf(now)
             });
-
             if (batchArgs.size() == BATCH_SIZE || i == TOTAL_SEATS) {
                 jdbcTemplate.batchUpdate(sql, batchArgs);
                 batchArgs.clear();
             }
         }
+
+        warmReadModel(event);
 
         log.info("Seeded {} seats for event {}", TOTAL_SEATS, event.getEventId());
     }
@@ -97,5 +102,18 @@ public class SeatSeeder implements ApplicationRunner {
         int row = (index - 1) / SEATS_PER_ROW + 1;
         int seatInRow = (index - 1) % SEATS_PER_ROW + 1;
         return "R" + row + "-" + seatInRow;
+    }
+
+    private void warmReadModel(Event event) {
+        List<SeatSnapshot> snapshots = jdbcTemplate.query(
+                "SELECT seat_id, seat_number, status FROM seats WHERE event_id = ? ORDER BY seat_id",
+                (resultSet, rowNum) -> new SeatSnapshot(
+                        resultSet.getLong("seat_id"),
+                        resultSet.getString("seat_number"),
+                        SeatStatus.valueOf(resultSet.getString("status"))
+                ),
+                event.getEventId()
+        );
+        seatReadModelPort.upsertSeats(event.getEventId(), snapshots);
     }
 }

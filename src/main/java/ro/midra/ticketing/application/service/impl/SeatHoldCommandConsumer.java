@@ -11,6 +11,7 @@ import org.springframework.transaction.annotation.Transactional;
 import ro.midra.ticketing.application.event.HoldSeatsCommandPayload;
 import ro.midra.ticketing.application.service.SeatHoldService;
 import ro.midra.ticketing.domain.ProcessedEvent;
+import ro.midra.ticketing.domain.ProcessedEventId;
 import ro.midra.ticketing.domain.repository.ProcessedEventRepository;
 
 import java.nio.charset.StandardCharsets;
@@ -29,6 +30,8 @@ import java.time.LocalDateTime;
 @RequiredArgsConstructor
 public class SeatHoldCommandConsumer {
 
+    private static final String CONSUMER_GROUP = "ticketing-seat-hold-workers";
+
     private final ProcessedEventRepository processedEventRepository;
     private final SeatHoldService seatHoldService;
     private final ObjectMapper objectMapper;
@@ -36,7 +39,7 @@ public class SeatHoldCommandConsumer {
     // "concurrency" caps how many threads pull from this topic at once -- this is the knob
     // that keeps MySQL from being hit by all 500k requests at the same time. Tune it to
     // whatever the MySQL connection pool can actually sustain.
-    @KafkaListener(topics = "seat-hold-commands", groupId = "ticketing-seat-hold-workers", concurrency = "5")
+    @KafkaListener(topics = "seat-hold-commands", groupId = CONSUMER_GROUP, concurrency = "5")
     @Transactional
     public void onMessage(ConsumerRecord<String, String> record) throws Exception {
         String eventId = headerValue(record, "eventId");
@@ -48,11 +51,12 @@ public class SeatHoldCommandConsumer {
         // Kafka is at-least-once: guard against processing the same delivery twice. Business
         // idempotency (same requestId submitted twice by the client) is handled separately,
         // inside SeatHoldTransactionalOps, via the PurchaseRequest table.
-        if (processedEventRepository.existsById(eventId)) {
+        if (processedEventRepository.existsByIdEventIdAndIdConsumerGroup(eventId, CONSUMER_GROUP)) {
             log.info("Duplicate hold command delivery, eventId={} already processed, skipping", eventId);
             return;
         }
-        processedEventRepository.save(new ProcessedEvent(eventId, LocalDateTime.now()));
+        processedEventRepository.save(new ProcessedEvent(
+                new ProcessedEventId(eventId, CONSUMER_GROUP), LocalDateTime.now()));
 
         HoldSeatsCommandPayload command = objectMapper.readValue(record.value(), HoldSeatsCommandPayload.class);
         seatHoldService.processQueuedHold(command);

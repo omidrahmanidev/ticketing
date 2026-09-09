@@ -12,10 +12,12 @@ import ro.midra.ticketing.application.exception.NotFoundException;
 import ro.midra.ticketing.application.exception.SeatNotAvailableException;
 import ro.midra.ticketing.application.lock.SeatLockPort;
 import ro.midra.ticketing.application.service.OutboxEventWriter;
+import ro.midra.ticketing.application.service.StatusCachePort;
 import ro.midra.ticketing.domain.*;
 import ro.midra.ticketing.domain.repository.*;
 
 import java.time.LocalDateTime;
+import java.time.Duration;
 import java.util.List;
 import java.util.Optional;
 
@@ -32,6 +34,7 @@ import java.util.Optional;
 class SeatHoldTransactionalOps {
 
     private static final int HOLD_MINUTES = 10;
+    private static final Duration STATUS_CACHE_TTL = Duration.ofMinutes(5);
 
     private final PurchaseRequestRepository purchaseRequestRepository;
     private final SeatRepository seatRepository;
@@ -40,6 +43,9 @@ class SeatHoldTransactionalOps {
     private final EventRepository eventRepository;
     private final SeatLockPort seatLockPort;
     private final OutboxEventWriter outboxEventWriter;
+    private final PurchaseRequestCreator purchaseRequestCreator;
+    private final PurchaseRequestFailureRecorder purchaseRequestFailureRecorder;
+    private final StatusCachePort statusCachePort;
 
     /**
      * Called only for requests that already won (or already own) the Redis lock. This is the
@@ -60,7 +66,7 @@ class SeatHoldTransactionalOps {
                 .orElseThrow(() -> new NotFoundException("Event not found: " + request.eventId()));
 
         PurchaseRequest purchaseRequest = newPurchaseRequest(request.requestId(), user, event);
-        purchaseRequestRepository.save(purchaseRequest);
+        purchaseRequestCreator.create(purchaseRequest);
 
         return finalizeHold(purchaseRequest, user, event, sortedSeatIds, true);
     }
@@ -87,7 +93,7 @@ class SeatHoldTransactionalOps {
                 .orElseThrow(() -> new NotFoundException("Event not found: " + command.eventId()));
 
         PurchaseRequest purchaseRequest = newPurchaseRequest(command.requestId(), user, event);
-        purchaseRequestRepository.save(purchaseRequest);
+        purchaseRequestCreator.create(purchaseRequest);
 
         try {
             finalizeHold(purchaseRequest, user, event, command.seatIds(), false);
@@ -100,9 +106,19 @@ class SeatHoldTransactionalOps {
 
     @Transactional(readOnly = true)
     HoldSeatsResponse getStatus(String requestId) {
+        Optional<HoldSeatsResponse> cached = statusCachePort.get(requestId);
+        if (cached.isPresent()) {
+            return cached.get();
+        }
+
         PurchaseRequest purchaseRequest = purchaseRequestRepository.findById(requestId)
                 .orElseThrow(() -> new NotFoundException("Purchase request not found: " + requestId));
-        return toResponse(purchaseRequest);
+        HoldSeatsResponse response = toResponse(purchaseRequest);
+        if (purchaseRequest.getStatus() == PurchaseRequestStatus.SUCCEEDED
+                || purchaseRequest.getStatus() == PurchaseRequestStatus.FAILED) {
+            statusCachePort.put(requestId, response, STATUS_CACHE_TTL);
+        }
+        return response;
     }
 
     private PurchaseRequest newPurchaseRequest(String requestId, User user, Event event) {
@@ -184,15 +200,15 @@ class SeatHoldTransactionalOps {
                             event.getEventId(), LocalDateTime.now())
             );
 
-            return toResponse(purchaseRequest);
+            HoldSeatsResponse response = toResponse(purchaseRequest);
+            statusCachePort.put(purchaseRequest.getRequestId(), response, STATUS_CACHE_TTL);
+            return response;
 
         } catch (RuntimeException ex) {
             if (redisLockAcquired) {
                 seatLockPort.unlock(sortedSeatIds);
             }
-            purchaseRequest.setStatus(PurchaseRequestStatus.FAILED);
-            purchaseRequest.setUpdatedAt(LocalDateTime.now());
-            purchaseRequestRepository.save(purchaseRequest);
+            purchaseRequestFailureRecorder.markFailed(purchaseRequest.getRequestId());
             throw ex;
         }
     }

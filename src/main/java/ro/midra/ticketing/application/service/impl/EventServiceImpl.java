@@ -7,6 +7,7 @@ import ro.midra.ticketing.application.dto.EventDto.EventResponse;
 import ro.midra.ticketing.application.dto.EventDto.SeatResponse;
 import ro.midra.ticketing.application.exception.NotFoundException;
 import ro.midra.ticketing.application.service.EventService;
+import ro.midra.ticketing.application.service.SeatReadModelPort;
 import ro.midra.ticketing.domain.Event;
 import ro.midra.ticketing.domain.EventStatus;
 import ro.midra.ticketing.domain.repository.EventRepository;
@@ -21,6 +22,7 @@ public class EventServiceImpl implements EventService {
 
     private final EventRepository eventRepository;
     private final SeatRepository seatRepository;
+    private final SeatReadModelPort seatReadModelPort;
 
     @Override
     public List<EventResponse> listOnSaleEvents() {
@@ -36,6 +38,12 @@ public class EventServiceImpl implements EventService {
 
     @Override
     public List<SeatResponse> listSeats(Long eventId) {
+        var snapshots = seatReadModelPort.listSeats(eventId);
+        if (snapshots.isPresent()) {
+            return snapshots.get().stream()
+                    .map(seat -> new SeatResponse(seat.seatId(), seat.seatNumber(), seat.status()))
+                    .toList();
+        }
         findEventOrThrow(eventId);
         return seatRepository.findByEventEventId(eventId).stream()
                 .map(seat -> new SeatResponse(seat.getSeatId(), seat.getSeatNumber(), seat.getStatus()))
