@@ -7,7 +7,7 @@ import ro.midra.ticketing.application.dto.ReservationDto.HoldSeatsResponse;
 import ro.midra.ticketing.application.event.HoldSeatsCommandPayload;
 import ro.midra.ticketing.application.exception.SeatNotAvailableException;
 import ro.midra.ticketing.application.lock.SeatLockPort;
-import ro.midra.ticketing.application.lock.SeatLockPort.SeatLockResult;
+import ro.midra.ticketing.application.lock.SeatLockPort.SeatLockOutcome;
 import ro.midra.ticketing.application.service.SeatHoldCommandPublisher;
 import ro.midra.ticketing.application.service.SeatHoldService;
 import ro.midra.ticketing.domain.PurchaseRequestStatus;
@@ -40,31 +40,30 @@ public class SeatHoldServiceImpl implements SeatHoldService {
         List<Long> sortedSeatIds = request.seatIds().stream().sorted().toList();
 
         // Redis SETNX-based lock, tried FIRST, before any database access at all.
-        SeatLockResult lockResult =
-                seatLockPort.tryLock(sortedSeatIds, request.requestId(), Duration.ofMinutes(HOLD_MINUTES));
-
-        if (lockResult.redisAvailable() && !lockResult.acquired()) {
-            // Someone else already holds this seat. Rejected purely in Redis -- MySQL never
-            // sees this request.
-            throw new SeatNotAvailableException("Seat already locked: " + lockResult.conflictingSeatIds());
-        }
-
-        if (!lockResult.redisAvailable()) {
-            // Redis is down. Do not query or write MySQL on this thread -- that is exactly
-            // the 500k-requests-at-once problem we're avoiding. Send the raw command straight
-            // to Kafka (no outbox here either, since outbox itself needs a DB write) and let
-            // a small, fixed-size consumer pool do the four DB reads + one insert later, at a
-            // controlled rate.
-            seatHoldCommandPublisher.publish(
-                    new HoldSeatsCommandPayload(request.requestId(), request.userId(), request.eventId(), sortedSeatIds)
-            );
-            return new HoldSeatsResponse(request.requestId(), PurchaseRequestStatus.PROCESSING,
-                    null, null, null, null);
-        }
-
-        // Redis is healthy and we hold the lock (freshly acquired, or already ours from a
-        // retry): this is the small fraction of requests allowed to touch MySQL.
-        return transactionalOps.createAndFinalize(request, sortedSeatIds);
+        return switch (seatLockPort.tryLock(sortedSeatIds, request.requestId(), Duration.ofMinutes(HOLD_MINUTES))) {
+            case SeatLockOutcome.Rejected(var conflictingSeatIds) -> {
+                // Someone else already holds this seat. Rejected purely in Redis -- MySQL never
+                // sees this request.
+                throw new SeatNotAvailableException("Seat already locked: " + conflictingSeatIds);
+            }
+            case SeatLockOutcome.Unavailable() -> {
+                // Redis is down. Do not query or write MySQL on this thread -- that is exactly
+                // the 500k-requests-at-once problem we're avoiding. Send the raw command straight
+                // to Kafka (no outbox here either, since outbox itself needs a DB write) and let
+                // a small, fixed-size consumer pool do the four DB reads + one insert later, at a
+                // controlled rate.
+                seatHoldCommandPublisher.publish(
+                        new HoldSeatsCommandPayload(request.requestId(), request.userId(), request.eventId(), sortedSeatIds)
+                );
+                yield new HoldSeatsResponse(request.requestId(), PurchaseRequestStatus.PROCESSING,
+                        null, null, null, null);
+            }
+            case SeatLockOutcome.Acquired() -> {
+                // Redis is healthy and we hold the lock (freshly acquired, or already ours from a
+                // retry): this is the small fraction of requests allowed to touch MySQL.
+                yield transactionalOps.createAndFinalize(request, sortedSeatIds);
+            }
+        };
     }
 
     @Override

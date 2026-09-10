@@ -2,7 +2,6 @@ package ro.midra.ticketing.domain.repository;
 
 import ro.midra.ticketing.domain.Seat;
 
-import java.util.Collection;
 import java.util.List;
 import java.util.Optional;
 
@@ -16,5 +15,5 @@ public interface SeatRepository {
 
     Seat save(Seat seat);
 
-    List<Seat> saveAll(Collection<Seat> seats);
+    <S extends Seat> List<S> saveAll(Iterable<S> seats);
 }

@@ -1,54 +1,51 @@
 package ro.midra.ticketing.application.service.impl;
 
 import lombok.RequiredArgsConstructor;
+import lombok.extern.slf4j.Slf4j;
 import net.javacrumbs.shedlock.spring.annotation.SchedulerLock;
 import org.apache.kafka.clients.producer.ProducerRecord;
 import org.springframework.kafka.core.KafkaTemplate;
 import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Component;
+import org.springframework.transaction.annotation.Propagation;
 import org.springframework.transaction.annotation.Transactional;
-import ro.midra.ticketing.domain.OutboxEvent;
-import ro.midra.ticketing.domain.repository.OutboxEventRepository;
+import ro.midra.ticketing.payment.infrastructure.outbox.PaymentOutboxRouter;
 
 import java.nio.charset.StandardCharsets;
-import java.util.List;
+import java.util.concurrent.TimeUnit;
 
 /**
- * Publishes notification-style events (SEAT_HELD, SEAT_CONFIRMED, RESERVATION_EXPIRED) that
- * were written to the outbox in the same transaction as a business change.
- *
- * Note: HOLD_SEAT_COMMAND (the Redis-down queueing path) does NOT go through here -- it is
- * published directly to Kafka by KafkaSeatHoldCommandPublisher, on purpose, so that path never
- * needs a database write at all. See SeatHoldServiceImpl.
+ * At-least-once delivery. Local payment work uses the same outbox as Kafka notifications.
  */
 @Component
 @RequiredArgsConstructor
+@Slf4j
 public class OutboxPublisherJob {
-
-    private static final String SEAT_EVENTS_TOPIC = "seat-events";
-
-    private final OutboxEventRepository outboxEventRepository;
+    private final OutboxDeliveryTransactions delivery;
+    private final PaymentOutboxRouter paymentRouter;
     private final KafkaTemplate<String, String> kafkaTemplate;
 
     @Scheduled(fixedDelay = 500)
-    @SchedulerLock(name = "publishOutboxEvents", lockAtMostFor = "PT20S", lockAtLeastFor = "PT200MS")
-    @Transactional
+    @SchedulerLock(name = "publishOutboxEvents", lockAtMostFor = "PT2M", lockAtLeastFor = "PT200MS")
+    @Transactional(propagation = Propagation.NEVER)
     public void publish() {
-        List<OutboxEvent> batch = outboxEventRepository.findTop100ByPublishedFalseOrderByIdAsc();
-        if (batch.isEmpty()) {
-            return;
+        for (var event : delivery.batch()) {
+            try {
+                if (!paymentRouter.deliver(event)) {
+                    var record = new ProducerRecord<String, String>("seat-events", event.getAggregateId(), event.getPayload());
+                    record.headers().add("eventId", event.getEventId().getBytes(StandardCharsets.UTF_8));
+                    record.headers().add("eventType", event.getEventType().getBytes(StandardCharsets.UTF_8));
+                    kafkaTemplate.send(record).get(5, TimeUnit.SECONDS);
+                }
+                delivery.acknowledge(event.getId());
+            } catch (Exception ex) {
+                log.warn("Outbox delivery failed eventId={} type={}", event.getEventId(), event.getEventType(), ex);
+                delivery.retryLater(event.getId());
+                if (ex instanceof InterruptedException) {
+                    Thread.currentThread().interrupt();
+                    return;
+                }
+            }
         }
-
-        for (OutboxEvent event : batch) {
-            ProducerRecord<String, String> record =
-                    new ProducerRecord<>(SEAT_EVENTS_TOPIC, event.getAggregateId(), event.getPayload());
-            record.headers().add("eventId", event.getEventId().getBytes(StandardCharsets.UTF_8));
-            record.headers().add("eventType", event.getEventType().getBytes(StandardCharsets.UTF_8));
-
-            kafkaTemplate.send(record);
-            event.setPublished(true);
-        }
-
-        outboxEventRepository.saveAll(batch);
     }
 }

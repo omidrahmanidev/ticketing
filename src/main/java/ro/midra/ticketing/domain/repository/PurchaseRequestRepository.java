@@ -8,5 +8,7 @@ public interface PurchaseRequestRepository {
 
     Optional<PurchaseRequest> findById(String requestId);
 
+    Optional<PurchaseRequest> findByReservationReservationId(Long reservationId);
+
     PurchaseRequest save(PurchaseRequest purchaseRequest);
 }

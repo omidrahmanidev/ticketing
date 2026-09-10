@@ -64,7 +64,7 @@ public class SeatReadModelProjector {
         return switch (eventType) {
             case "SEAT_HELD" -> SeatStatus.HELD;
             case "SEAT_CONFIRMED" -> SeatStatus.PAID;
-            case "RESERVATION_EXPIRED" -> SeatStatus.AVAILABLE;
+            case "RESERVATION_EXPIRED", "RESERVATION_CANCELLED" -> SeatStatus.AVAILABLE;
             default -> null;
         };
     }

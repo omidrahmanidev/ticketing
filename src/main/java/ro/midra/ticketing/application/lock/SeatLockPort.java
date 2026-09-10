@@ -5,10 +5,21 @@ import java.util.List;
 
 public interface SeatLockPort {
 
-    record SeatLockResult(boolean redisAvailable, boolean acquired, List<Long> conflictingSeatIds) {
+    sealed interface SeatLockOutcome {
+        record Acquired() implements SeatLockOutcome {
+        }
+
+        record Rejected(List<Long> conflictingSeatIds) implements SeatLockOutcome {
+        }
+
+        record Unavailable() implements SeatLockOutcome {
+        }
     }
 
-    SeatLockResult tryLock(List<Long> seatIds, String owner, Duration ttl);
+    SeatLockOutcome tryLock(List<Long> seatIds, String owner, Duration ttl);
 
     void unlock(List<Long> seatIds);
+
+    /** Retryable release; must never delete a newer owner's lock. */
+    void unlockOwned(List<Long> seatIds, String owner);
 }

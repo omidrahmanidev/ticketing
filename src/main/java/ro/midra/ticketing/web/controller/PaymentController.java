@@ -5,45 +5,35 @@ import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.*;
 import ro.midra.ticketing.application.dto.PaymentDto.ConfirmPaymentRequest;
 import ro.midra.ticketing.application.dto.PaymentDto.PaymentResponse;
-import ro.midra.ticketing.application.service.PaymentService;
-import ro.midra.ticketing.application.service.PaymentEventStore;
-import ro.midra.ticketing.application.exception.NotFoundException;
-import ro.midra.ticketing.application.projection.PaymentProjectionState;
-import ro.midra.ticketing.domain.Payment;
-import ro.midra.ticketing.domain.repository.PaymentRepository;
+import ro.midra.ticketing.payment.application.PaymentQueryService;
+import ro.midra.ticketing.payment.application.PaymentReplayService;
+import ro.midra.ticketing.payment.application.StartPaymentHandler;
 
 @RestController
 @RequestMapping("/api/payments")
 @RequiredArgsConstructor
 public class PaymentController {
-
-    private final PaymentService paymentService;
-    private final PaymentRepository paymentRepository;
-    private final PaymentEventStore paymentEventStore;
+    private final StartPaymentHandler start;
+    private final PaymentQueryService queries;
+    private final PaymentReplayService replay;
 
     @PostMapping("/confirm")
-    public ResponseEntity<PaymentResponse> confirmPayment(@RequestBody ConfirmPaymentRequest request) {
-        return ResponseEntity.ok(paymentService.confirmPayment(request));
+    public ResponseEntity<PaymentResponse> startPayment(@RequestBody ConfirmPaymentRequest request) {
+        return ResponseEntity.accepted().body(start.startPayment(request));
     }
 
     @GetMapping("/{paymentId}/status")
-    public ResponseEntity<PaymentResponse> status(@PathVariable Long paymentId) {
-        Payment payment = paymentRepository.findById(paymentId)
-                .orElseThrow(() -> new NotFoundException("Payment not found: " + paymentId));
-        return ResponseEntity.ok(response(payment));
+    public PaymentResponse status(@PathVariable Long paymentId) {
+        return queries.status(paymentId);
     }
 
     @GetMapping("/{paymentId}/replay")
-    public ResponseEntity<PaymentResponse> replay(@PathVariable Long paymentId) {
-        Payment payment = paymentRepository.findById(paymentId)
-                .orElseThrow(() -> new NotFoundException("Payment not found: " + paymentId));
-        PaymentProjectionState state = paymentEventStore.replay(paymentId);
-        return ResponseEntity.ok(new PaymentResponse(paymentId, state.getStatus(), state.getAmount(),
-                state.getProviderReference(), state.getRetryCount(), state.getLastError()));
+    public PaymentResponse replay(@PathVariable Long paymentId) {
+        return replay.replay(paymentId);
     }
 
-    private PaymentResponse response(Payment payment) {
-        return new PaymentResponse(payment.getPaymentId(), payment.getStatus(), payment.getAmount(),
-                payment.getProviderReference(), payment.getRetryCount(), payment.getLastError());
+    @PostMapping("/{paymentId}/rebuild")
+    public PaymentResponse rebuild(@PathVariable Long paymentId) {
+        return replay.rebuild(paymentId);
     }
 }

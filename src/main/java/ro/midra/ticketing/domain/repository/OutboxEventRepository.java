@@ -6,9 +6,10 @@ import java.util.List;
 
 public interface OutboxEventRepository {
 
-    List<OutboxEvent> findTop100ByPublishedFalseOrderByIdAsc();
+    List<OutboxEvent> findDue(java.time.LocalDateTime now, org.springframework.data.domain.Pageable page);
+
+    java.util.Optional<OutboxEvent> findAndLockById(Long id);
 
     OutboxEvent save(OutboxEvent outboxEvent);
 
-    void saveAll(List<OutboxEvent> batch);
 }

@@ -1,13 +1,8 @@
 package ro.midra.ticketing;
 
 import org.junit.jupiter.api.Test;
-import org.springframework.boot.test.context.SpringBootTest;
+import ro.midra.ticketing.payment.PaymentIntegrationSupport;
 
-@SpringBootTest
-class TicketingApplicationTests {
-
-    @Test
-    void contextLoads() {
-    }
-
+class TicketingApplicationTests extends PaymentIntegrationSupport {
+    @Test void contextLoads() {}
 }

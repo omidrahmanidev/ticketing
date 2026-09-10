@@ -5,6 +5,9 @@ import lombok.extern.slf4j.Slf4j;
 import org.springframework.data.redis.core.StringRedisTemplate;
 import org.springframework.stereotype.Component;
 import ro.midra.ticketing.application.lock.SeatLockPort;
+import ro.midra.ticketing.application.lock.SeatLockPort.SeatLockOutcome.Acquired;
+import ro.midra.ticketing.application.lock.SeatLockPort.SeatLockOutcome.Rejected;
+import ro.midra.ticketing.application.lock.SeatLockPort.SeatLockOutcome.Unavailable;
 
 import java.time.Duration;
 import java.util.ArrayList;
@@ -20,7 +23,7 @@ public class RedisSeatLockAdapter implements SeatLockPort {
     private final StringRedisTemplate redisTemplate;
 
     @Override
-    public SeatLockResult tryLock(List<Long> seatIds, String owner, Duration ttl) {
+    public SeatLockOutcome tryLock(List<Long> seatIds, String owner, Duration ttl) {
         List<Long> acquired = new ArrayList<>();
         try {
             for (Long seatId : seatIds) {
@@ -46,14 +49,14 @@ public class RedisSeatLockAdapter implements SeatLockPort {
 
                 // Genuinely someone else's lock: bail out without touching the database at all.
                 releaseKeys(acquired);
-                return new SeatLockResult(true, false, List.of(seatId));
+                return new Rejected(List.of(seatId));
             }
-            return new SeatLockResult(true, true, List.of());
+            return new Acquired();
 
         } catch (Exception ex) {
             log.warn("Redis unavailable, falling back to the queue-based path: {}", ex.getMessage());
             releaseKeys(acquired);
-            return new SeatLockResult(false, false, List.of());
+            return new Unavailable();
         }
     }
 
@@ -64,6 +67,13 @@ public class RedisSeatLockAdapter implements SeatLockPort {
         } catch (Exception ex) {
             log.warn("Failed to release redis seat locks, they will expire via TTL: {}", ex.getMessage());
         }
+    }
+
+    @Override
+    public void unlockOwned(List<Long> seatIds, String owner) {
+        var script = new org.springframework.data.redis.core.script.DefaultRedisScript<Long>(
+                "if redis.call('get', KEYS[1]) == ARGV[1] then return redis.call('del', KEYS[1]) else return 0 end", Long.class);
+        for (Long seatId : seatIds) redisTemplate.execute(script, List.of(KEY_PREFIX + seatId), owner);
     }
 
     private void releaseKeys(List<Long> seatIds) {

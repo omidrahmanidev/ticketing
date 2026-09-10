@@ -1,6 +1,6 @@
 package ro.midra.ticketing.application.dto;
 
-import ro.midra.ticketing.domain.PaymentStatus;
+import ro.midra.ticketing.payment.domain.PaymentStatus;
 
 import java.math.BigDecimal;
 

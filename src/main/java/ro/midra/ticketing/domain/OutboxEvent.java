@@ -45,6 +45,12 @@ public class OutboxEvent {
     @Column(nullable = false)
     private boolean published;
 
+    @Column(name = "available_at")
+    private LocalDateTime availableAt;
+
+    @Column(name = "delivery_attempts")
+    private Integer deliveryAttempts;
+
     @Column(name = "created_at", nullable = false)
     private LocalDateTime createdAt;
 }

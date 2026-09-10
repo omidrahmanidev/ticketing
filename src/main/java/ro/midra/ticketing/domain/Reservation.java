@@ -52,13 +52,6 @@ public class Reservation {
     @Builder.Default
     private List<ReservationSeat> seats = new ArrayList<>();
 
-    @OneToMany(
-            mappedBy = "reservation",
-            cascade = CascadeType.ALL
-    )
-    @Builder.Default
-    private List<Payment> payments = new ArrayList<>();
-
     @Column(name = "created_at", nullable = false)
     private LocalDateTime createdAt;
 
