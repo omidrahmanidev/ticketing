@@ -6,10 +6,11 @@ import java.math.BigDecimal;
 
 public class PaymentDto {
 
-    public record ConfirmPaymentRequest(Long reservationId, Long userId, String providerReference) {
+    public record ConfirmPaymentRequest(Long reservationId, Long userId, String testScenario) {
     }
 
-    public record PaymentResponse(Long paymentId, PaymentStatus status, BigDecimal amount) {
+    public record PaymentResponse(Long paymentId, PaymentStatus status, BigDecimal amount,
+                                  String providerReference, int retryCount, String lastError) {
     }
 
     private PaymentDto() {

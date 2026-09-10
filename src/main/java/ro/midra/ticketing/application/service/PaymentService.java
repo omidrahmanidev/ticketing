@@ -6,4 +6,9 @@ import ro.midra.ticketing.application.dto.PaymentDto.PaymentResponse;
 public interface PaymentService {
 
     PaymentResponse confirmPayment(ConfirmPaymentRequest request);
+
+    PaymentResponse processInit(Long paymentId);
+    PaymentResponse processConfirm(Long paymentId);
+    PaymentResponse processInquiry(Long paymentId);
+    PaymentResponse processRefund(Long paymentId);
 }

@@ -36,6 +36,7 @@ public class ReservationExpiryServiceImpl implements ReservationExpiryService {
     public void releaseExpiredReservations() {
         LocalDateTime now = LocalDateTime.now();
         List<Reservation> expired = reservationRepository
+                // PAYMENT_PENDING is deliberately excluded: uncertain payment state freezes the hold.
                 .findByStatusAndExpiresAtBefore(ReservationStatus.HELD, now);
 
         for (Reservation reservation : expired) {

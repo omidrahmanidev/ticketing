@@ -192,7 +192,8 @@ The benefit: if we ever swap MySQL for Postgres, or Redis for something else, on
 | `ReservationSeat` | Join row linking a `Reservation` to a `Seat` (a reservation can cover several seats). |
 | `PurchaseRequest` | The idempotency record for one "buy" click, identified by a client-generated `requestId`. |
 | `PurchaseRequestSeat` | Join row linking a `PurchaseRequest` to the `Seat`s it asked for. |
-| `Payment` | A payment attempt against a `Reservation`. |
+| `Payment` | The fast JPA projection of an event-sourced payment Saga for a `Reservation`. |
+| `PaymentEvent` | One immutable, ordered fact in a payment Saga's replayable audit trail. |
 | `OutboxEvent` | A row waiting to be published to Kafka, written in the same transaction as a business change. |
 | `ProcessedEvent` | A record that a given Kafka message (`eventId`) was already handled, used to ignore duplicates. |
 
@@ -262,13 +263,19 @@ from `ReservationSeat` because a purchase request can fail before a `Reservation
 we still want a record of what the user tried to buy.
 
 **`Payment`**
-One row per payment attempt against a `Reservation`. `status` is `PENDING`, `SUCCEEDED`,
-`FAILED`, or `REFUNDED`. `providerReference` stores the payment gateway's own transaction id, so
-we can look up a charge on their side if needed.
+One row per payment Saga against a `Reservation`. It is a fast read-model projection, not the
+source of truth: `payment_events` is replayed whenever we need to independently reconstruct the
+state. It records the current Saga status, the stable operation id used for provider idempotency,
+retry metadata, and the provider's transaction reference.
 
 ```
-Payment { paymentId: 77, reservation: 900, amount: 2, status: SUCCEEDED, providerReference: "pi_123" }
+Payment { paymentId: 77, reservation: 900, amount: 2, status: CONFIRMED, providerReference: "ref-123" }
 ```
+
+**`PaymentEvent`**
+An append-only event such as `PAYMENT_INITIATED`, `OPERATION_TIMED_OUT`,
+`INQUIRY_PERFORMED`, `PAYMENT_CONFIRMED`, or `PAYMENT_REFUNDED`. Events are ordered by a unique
+per-payment sequence number, so the full financial decision history can be replayed and audited.
 
 **`OutboxEvent`**
 Not part of the "business" data model — it is technical support data for reliable messaging. Written in the
@@ -361,6 +368,19 @@ other 19 simply skip that run.
   trip after a few failures and skip the attempt entirely for a while, saving latency. Listed
   here as a good next step, not yet implemented.
 
+### 4.8 Why payment uses an event-sourced orchestration Saga
+
+Payment is an orchestration Saga rather than choreography because the payment provider is a real
+external system that we do not control and cannot include in the local MySQL ACID transaction.
+The orchestrator explicitly decides whether to initialize, confirm, inquire after an unknown
+timeout, or compensate with a refund. In contrast, the seat-hold flow remains entirely inside one
+MySQL transaction.
+
+The payment Saga is event-sourced because a financial operation needs a replayable audit trail:
+every attempt, timeout, inquiry, resolution, and compensation is retained in `payment_events`.
+That history lets us reconstruct the projection and investigate uncertain provider outcomes in a
+way the short-lived seat-hold flow does not need.
+
 ---
 
 ## 5. API Endpoints
@@ -374,6 +394,8 @@ other 19 simply skip that run.
 | `POST` | `/api/reservations/hold` | Tries to hold one or more seats. Returns `201` if resolved immediately, `202` if queued (Redis was down). |
 | `GET` | `/api/reservations/status/{requestId}` | Polls the result of a hold request. |
 | `POST` | `/api/payments/confirm` | Confirms payment for a `HELD` reservation. |
+| `GET` | `/api/payments/{paymentId}/status` | Reads the current payment Saga projection. |
+| `GET` | `/api/payments/{paymentId}/replay` | Replays the payment event log for comparison with the projection. |
 | `GET` | `/api/seats/{seatId}/history` | Full history of who has held a given seat over time. |
 
 ---
